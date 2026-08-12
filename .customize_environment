@@ -1,0 +1,9 @@
+#!/bin/bash
+# Cloud Shell boot hook — runs automatically as root when the instance boots.
+# It hands off to proxy-start.sh as the login user.
+# Docs: https://cloud.google.com/shell/docs/configuring-cloud-shell
+
+USER_HOME=$(ls -d /home/*/ 2>/dev/null | head -1)
+[ -z "$USER_HOME" ] && exit 0
+USER_NAME=$(basename "$USER_HOME")
+su - "$USER_NAME" -c "nohup $USER_HOME/proxy-start.sh >/dev/null 2>&1 &"
