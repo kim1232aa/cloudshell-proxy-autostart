@@ -384,7 +384,7 @@ def kui_exits() -> list[dict]:
     req = urllib.request.Request(KUI_API)
     req.add_header("Authorization",
                    "Basic " + base64.b64encode(f"admin:{password}".encode()).decode())
-    with urllib.request.urlopen(req, timeout=5) as r:
+    with urllib.request.urlopen(req, timeout=3) as r:
         data = json.loads(r.read().decode("utf-8"))
     exits = data.get("exits", []) if isinstance(data, dict) else []
     _kui_cache.update(at=now, exits=exits)

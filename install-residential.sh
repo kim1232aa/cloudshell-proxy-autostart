@@ -37,7 +37,10 @@ fi
 
 # --- kui source + local patches ---
 if [ -d "$KUI_DIR/.git" ]; then
-  git -C "$KUI_DIR" pull --ff-only || echo "warn: kui repo pull failed, using existing checkout"
+  if ! git -C "$KUI_DIR" pull --ff-only; then
+    echo "warn: kui repo pull failed (local changes or network?) — continuing with the existing checkout" >&2
+    echo "      inspect: git -C $KUI_DIR status   |   reset to upstream: git -C $KUI_DIR stash" >&2
+  fi
 else
   git clone "$KUI_REPO_URL" "$KUI_DIR"
 fi
@@ -82,6 +85,10 @@ PY
 # --- subscription secret path ---
 [ -f "$BIN/sub-path" ] || echo "/sub-$(openssl rand -hex 16)" > "$BIN/sub-path"
 
+# --- example entry-domain lists (copied only when absent — edit them freely) ---
+[ -f "$BIN/res-domains.txt" ]   || cp "$SCRIPT_DIR/res-domains.txt"   "$BIN/res-domains.txt"
+[ -f "$BIN/front-domains.txt" ] || cp "$SCRIPT_DIR/front-domains.txt" "$BIN/front-domains.txt"
+
 # --- supervisor + shell hook ---
 cp "$SCRIPT_DIR/supervise.sh" "$BIN/supervise.sh"
 cp "$SCRIPT_DIR/subserver.py" "$BIN/subserver.py"
@@ -92,6 +99,18 @@ grep -qF 'proxy-bin/supervise.sh' "$HOME/.bashrc" 2>/dev/null || echo "$HOOK" >>
 # --- (re)build tunnel ingress with /res-NN path split, then start everything ---
 bash "$HOME/proxy-start.sh" || true
 pgrep -f "proxy-bin/supervise.sh" >/dev/null 2>&1 || setsid "$BIN/supervise.sh" >/dev/null 2>&1 &
+
+# warn when an existing kui-test container was created with a different slot
+# count: docker run only executes on first creation, so changing KUI_SLOT_COUNT
+# needs a recreate — supervise.sh recreates it automatically after removal
+if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx kui-test; then
+  CUR=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' kui-test 2>/dev/null \
+        | grep '^KUI_SLOT_COUNT=' | cut -d= -f2)
+  if [ -n "$CUR" ] && [ "$CUR" != "$SLOT_COUNT" ]; then
+    echo "warn: kui-test container runs KUI_SLOT_COUNT=$CUR but singbox-res.json was" >&2
+    echo "      generated for $SLOT_COUNT — apply with: docker rm -f kui-test" >&2
+  fi
+fi
 
 echo
 echo "residential layer installed. subscription URL:"
