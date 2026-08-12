@@ -12,8 +12,7 @@ ENV CLOUDSDK_CONFIG=/state/gcloud \
     PROBE_PROXY= \
     PROBE_RETRIES=4 \
     KEEPALIVE=1 \
-    KEEPALIVE_INTERVAL=1500 \
-    QUOTA_COOLDOWN_DAYS=7
+    KEEPALIVE_INTERVAL=1500
 
 VOLUME /state
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
