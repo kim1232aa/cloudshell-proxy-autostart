@@ -45,6 +45,8 @@ UUID_FILE="$BIN/uuid"
 LINK="$HOME_DIR/proxy-link.txt"
 TOKEN_FILE="$BIN/cf-tunnel-token"
 HOST_FILE="$BIN/cf-hostname"
+CREDS_FILE="$BIN/cf-tunnel-creds.json"
+CF_CONFIG="$BIN/cf-config.yml"
 VLESS_PORT=38080
 WS_PATH="/vless"
 
@@ -90,9 +92,19 @@ EOF
 pgrep -x xray >/dev/null 2>&1 || nohup "$BIN/xray" run -c "$BIN/xray.json" >>"$LOG" 2>&1 &
 
 # Start cloudflared (idempotent; rotate log so we never read a stale quick-tunnel URL)
+# named-tunnel priority: credentials-file mode (cf-setup.sh) > token mode (dashboard)
 if ! pgrep -f "cloudflared tunnel" >/dev/null 2>&1; then
   [ -f "$LOG" ] && mv "$LOG" "$LOG.old"
-  if [ -s "$TOKEN_FILE" ]; then
+  if [ -s "$CREDS_FILE" ]; then
+    TID=$(grep -oE '"TunnelID"[ ]*:[ ]*"[^"]+"' "$CREDS_FILE" | cut -d'"' -f4)
+    cat > "$CF_CONFIG" <<EOF2
+tunnel: $TID
+credentials-file: $CREDS_FILE
+ingress:
+  - service: http://127.0.0.1:$VLESS_PORT
+EOF2
+    nohup "$BIN/cloudflared" tunnel --config "$CF_CONFIG" --no-autoupdate --protocol http2 run >>"$LOG" 2>&1 &
+  elif [ -s "$TOKEN_FILE" ]; then
     nohup "$BIN/cloudflared" tunnel --no-autoupdate --protocol http2 --token "$(cat "$TOKEN_FILE")" run >>"$LOG" 2>&1 &
   else
     nohup "$BIN/cloudflared" tunnel --url "http://127.0.0.1:$VLESS_PORT" --no-autoupdate --protocol http2 >>"$LOG" 2>&1 &
@@ -100,7 +112,7 @@ if ! pgrep -f "cloudflared tunnel" >/dev/null 2>&1; then
 fi
 
 HOST=""
-if [ -s "$TOKEN_FILE" ]; then
+if [ -s "$CREDS_FILE" ] || [ -s "$TOKEN_FILE" ]; then
   # named-tunnel mode: hostname is fixed, configured in Cloudflare dashboard
   if [ ! -s "$HOST_FILE" ]; then
     echo "FAILED $(date -u '+%F %T'): $HOST_FILE missing (write your tunnel public hostname into it)" > "$LINK"

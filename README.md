@@ -78,16 +78,30 @@ Quick tunnels get a random hostname per boot — fine solo, annoying for failove
 A **named Cloudflare Tunnel** gives one fixed hostname backed by replicas on multiple
 accounts; Cloudflare routes to whichever connector is alive.
 
-One-time Cloudflare setup:
+One-time Cloudflare setup — two ways:
 
-1. [Zero Trust dashboard](https://one.dash.cloudflare.com) → **Networks → Tunnels → Add a tunnel** → `cloudflared`.
-2. Copy the tunnel token (`eyJ...`).
-3. Add a **Public Hostname**, e.g. `gcs.example.com`, service `http://127.0.0.1:38080`.
+**Option A: `cf-setup.sh` (no dashboard, no API token)** — needs a local cloudflared
+that has done `cloudflared tunnel login` once:
+
+```bash
+./cf-setup.sh gcs.example.com          # creates tunnel + DNS route, prints next steps
+```
+
+It hands you a credentials JSON; every Cloud Shell account will join the tunnel with it
+(credentials-file mode, replicas supported natively).
+
+**Option B: dashboard (token mode)** — [Zero Trust](https://one.dash.cloudflare.com) →
+**Networks → Tunnels → Add a tunnel** → `cloudflared`, copy the `eyJ...` token, add a
+**Public Hostname** `gcs.example.com` with service `http://127.0.0.1:38080`.
 
 Per Google account (in that account's Cloud Shell, after step 1):
 
 ```bash
+# option A: paste the credentials JSON
+nano ~/proxy-bin/cf-tunnel-creds.json
+# option B instead:
 echo '<tunnel-token>'  > ~/proxy-bin/cf-tunnel-token
+
 echo 'gcs.example.com' > ~/proxy-bin/cf-hostname
 # every account MUST share one UUID: copy ~/proxy-bin/uuid from the first account
 bash ~/proxy-start.sh
@@ -180,6 +194,7 @@ probe — and in docker also gcloud itself — via a local proxy, e.g.
 | `proxy-start.sh` | Cloud Shell | Rebuilds xray + cloudflared; idempotent; named/quick tunnel auto-detect |
 | `.customize_environment` | Cloud Shell | Official boot hook, hands off to `proxy-start.sh` at every boot |
 | `watchdog.sh` | Local / container | Probe, keepalive, quota-aware multi-account failover; cron or `--loop` |
+| `cf-setup.sh` | Local | Create named tunnel + DNS route via local cloudflared login (no dashboard) |
 | `Dockerfile`, `docker-entrypoint.sh`, `docker-compose.yml` | Local | Self-contained watchdog container (`state/` volume holds everything) |
 
 ## Disclaimer
