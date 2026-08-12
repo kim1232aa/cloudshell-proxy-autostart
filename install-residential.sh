@@ -85,9 +85,10 @@ PY
 # --- subscription secret path ---
 [ -f "$BIN/sub-path" ] || echo "/sub-$(openssl rand -hex 16)" > "$BIN/sub-path"
 
-# --- example entry-domain lists (copied only when absent — edit them freely) ---
-[ -f "$BIN/res-domains.txt" ]   || cp "$SCRIPT_DIR/res-domains.txt"   "$BIN/res-domains.txt"
-[ -f "$BIN/front-domains.txt" ] || cp "$SCRIPT_DIR/front-domains.txt" "$BIN/front-domains.txt"
+# --- example entry-domain lists (copied only when absent — edit them freely;
+#     missing example files are not fatal, e.g. when running from ~/proxy-bin) ---
+[ -f "$BIN/res-domains.txt" ]   || cp "$SCRIPT_DIR/res-domains.txt"   "$BIN/res-domains.txt"   2>/dev/null || true
+[ -f "$BIN/front-domains.txt" ] || cp "$SCRIPT_DIR/front-domains.txt" "$BIN/front-domains.txt" 2>/dev/null || true
 
 # --- supervisor + shell hook ---
 cp "$SCRIPT_DIR/supervise.sh" "$BIN/supervise.sh"
