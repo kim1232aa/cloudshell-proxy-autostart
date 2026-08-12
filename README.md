@@ -1,5 +1,9 @@
 # cloudshell-proxy-autostart
 
+> **Branch `kui-residential`**: adds an optional residential-IP exit layer
+> (kui / VPNGate pool behind sing-box, dynamic Clash subscription).
+> See [RESIDENTIAL.md](RESIDENTIAL.md).
+
 Self-healing VLESS+WS proxy on Google Cloud Shell, fronted by Cloudflare Tunnel —
 plus a self-contained local watchdog container that keeps it alive and rotates
 across multiple Google accounts when one dies or runs out of weekly quota.
@@ -113,17 +117,21 @@ regardless of which account is currently running.
 ### Hosting a Clash subscription on the tunnel (optional, creds mode)
 
 The named tunnel can also serve your Clash subscription, so updating preferred IPs
-is a server-side edit instead of re-importing links:
+is a server-side edit instead of re-importing links. `subserver.py` generates the
+YAML **dynamically** per request:
 
 ```bash
 # on each account's Cloud Shell:
 echo "/sub-$(openssl rand -hex 16)" > ~/proxy-bin/sub-path   # one secret path, same everywhere
-nano ~/proxy-bin/sub.yaml                                    # your Clash Meta YAML
-bash ~/proxy-start.sh                                        # re-run: adds path-split ingress
+# front nodes — either format:
+nano ~/proxy-bin/sub-front.yaml      # verbatim Clash proxies fragment, or
+nano ~/proxy-bin/front-domains.txt   # one "domain [name]" per line → vless+ws nodes
+bash ~/proxy-start.sh                # re-run: adds path-split ingress
 ```
 
-Ingress becomes `/vless` → xray, everything else → `subserver.py` (127.0.0.1:38081),
-which returns the YAML at the exact secret path and a bare 404 for anything else
+Ingress becomes `/vless` → xray (plus `/res-NN` → sing-box when the residential
+layer is installed), everything else → `subserver.py` (127.0.0.1:38081), which
+returns the YAML at the exact secret path and a bare 404 for anything else
 (no directory listing). Subscribe at `https://<host><secret-path>` — the URL is a
 credential, treat it like a password. Token-mode (dashboard) tunnels: configure the
 same path split as two Public Hostname/ingress rules in the dashboard instead.
@@ -213,7 +221,11 @@ probe — and in docker also gcloud itself — via a local proxy, e.g.
 | `.customize_environment` | Cloud Shell | Official boot hook, hands off to `proxy-start.sh` at every boot |
 | `watchdog.sh` | Local / container | Probe, keepalive, quota-aware multi-account failover; cron or `--loop` |
 | `cf-setup.sh` | Local | Create named tunnel + DNS route via local cloudflared login (no dashboard) |
-| `subserver.py` | Cloud Shell | Optional: serve Clash subscription at one secret path (creds mode) |
+| `subserver.py` | Cloud Shell | Optional: dynamic Clash subscription at one secret path (front + live residential nodes) |
+| `install-residential.sh` | Cloud Shell | Optional: add the kui residential-exit layer — see [RESIDENTIAL.md](RESIDENTIAL.md) |
+| `supervise.sh` | Cloud Shell | 15 s keep-alive loop for all components (installed by `install-residential.sh`) |
+| `res-domains.txt`, `front-domains.txt` | Cloud Shell | Examples: entry-domain lists for residential / front nodes |
+| `kui-patches/` | Cloud Shell | Local patches applied to kui-local-multi-exit at install time |
 | `Dockerfile`, `docker-entrypoint.sh`, `docker-compose.yml` | Local | Self-contained watchdog container (`state/` volume holds everything) |
 
 ## Disclaimer

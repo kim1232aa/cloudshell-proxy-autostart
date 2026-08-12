@@ -1,0 +1,13 @@
+# Front (CF -> CloudShell, direct egress) entry domains — copy to
+# ~/proxy-bin/front-domains.txt and edit. One node is generated per line:
+#   "domain [display name]"
+# server = domain:443, SNI/Host = your tunnel hostname, path = /vless.
+#
+# Only used when ~/proxy-bin/sub-front.yaml does NOT exist (sub-front.yaml,
+# a verbatim Clash proxies fragment, takes precedence if you prefer full
+# control over node fields).
+#
+# Example:
+# cf.090227.xyz CF优选·090227
+# www.visa.cn 伪装·VISA
+# your-cf-domain.example 自有域名

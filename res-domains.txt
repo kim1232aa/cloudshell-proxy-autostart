@@ -1,0 +1,14 @@
+# Residential entry domains — copy to ~/proxy-bin/res-domains.txt and edit.
+# One entry per line: "domain [tag]"  (tag is appended to the node name)
+#
+# The FIRST active line is the primary entry: it joins the url-test groups
+# (🏠 住宅自动 / country groups). Following lines are manual-select fallbacks.
+# Each residential slot gets one node per active line (no slot x domain matrix).
+#
+# If this file is missing, the tunnel hostname itself is the only entry domain.
+#
+# Any Cloudflare-fronted domain whose DNS you don't control still works as the
+# `server` address (SNI/Host stay your tunnel hostname) — public "preferred
+# domain" lists are a good source. Example:
+# saas.sin.fan
+# your-cf-domain.example 保底

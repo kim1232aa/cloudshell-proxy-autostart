@@ -10,6 +10,10 @@
 # Invoked automatically at boot by ~/.customize_environment.
 set -u
 
+# single-instance guard: boot may trigger this script concurrently
+exec 9>/tmp/proxy-start.lock
+flock -n 9 || exit 0
+
 HOME_DIR="$HOME"
 BIN="$HOME_DIR/proxy-bin"
 LOG="$HOME_DIR/proxy-runtime.log"
@@ -25,10 +29,10 @@ WS_PATH="/vless"
 
 mkdir -p "$BIN"
 
-# Optional subscription server: serves ~/proxy-bin/sub.yaml at the exact secret
+# Optional subscription server: dynamic Clash YAML served at the exact secret
 # path in ~/proxy-bin/sub-path, 404 for everything else (started even on the
 # fast path so it can be added to an already-running instance)
-if [ -f "$BIN/sub.yaml" ] && [ -f "$BIN/sub-path" ] && [ -f "$BIN/subserver.py" ] \
+if [ -f "$BIN/subserver.py" ] && [ -f "$BIN/sub-path" ] \
    && ! pgrep -f "subserver.py" >/dev/null 2>&1; then
   nohup python3 "$BIN/subserver.py" >>"$LOG" 2>&1 &
 fi
@@ -78,7 +82,7 @@ if ! pgrep -f "cloudflared tunnel" >/dev/null 2>&1; then
   [ -f "$LOG" ] && mv "$LOG" "$LOG.old"
   if [ -s "$CREDS_FILE" ]; then
     TID=$(grep -oE '"TunnelID"[ ]*:[ ]*"[^"]+"' "$CREDS_FILE" | cut -d'"' -f4)
-    if [ -f "$BIN/sub.yaml" ] && [ -f "$BIN/sub-path" ]; then
+    if [ -f "$BIN/subserver.py" ] && [ -f "$BIN/sub-path" ]; then
       # path-split: /vless -> xray, everything else -> subscription server
       cat > "$CF_CONFIG" <<EOF2
 tunnel: $TID
@@ -86,6 +90,54 @@ credentials-file: $CREDS_FILE
 ingress:
   - path: ^${WS_PATH}\$
     service: http://127.0.0.1:$VLESS_PORT
+  - path: ^/res-01$
+    service: http://127.0.0.1:38090
+  - path: ^/res-02$
+    service: http://127.0.0.1:38091
+  - path: ^/res-03$
+    service: http://127.0.0.1:38092
+  - path: ^/res-04$
+    service: http://127.0.0.1:38093
+  - path: ^/res-05$
+    service: http://127.0.0.1:38094
+  - path: ^/res-06$
+    service: http://127.0.0.1:38095
+  - path: ^/res-07$
+    service: http://127.0.0.1:38096
+  - path: ^/res-08$
+    service: http://127.0.0.1:38097
+  - path: ^/res-09$
+    service: http://127.0.0.1:38098
+  - path: ^/res-10$
+    service: http://127.0.0.1:38099
+  - path: ^/res-11$
+    service: http://127.0.0.1:38100
+  - path: ^/res-12$
+    service: http://127.0.0.1:38101
+  - path: ^/res-13$
+    service: http://127.0.0.1:38102
+  - path: ^/res-14$
+    service: http://127.0.0.1:38103
+  - path: ^/res-15$
+    service: http://127.0.0.1:38104
+  - path: ^/res-16$
+    service: http://127.0.0.1:38105
+  - path: ^/res-17$
+    service: http://127.0.0.1:38106
+  - path: ^/res-18$
+    service: http://127.0.0.1:38107
+  - path: ^/res-19$
+    service: http://127.0.0.1:38108
+  - path: ^/res-20$
+    service: http://127.0.0.1:38109
+  - path: ^/res-21$
+    service: http://127.0.0.1:38110
+  - path: ^/res-22$
+    service: http://127.0.0.1:38111
+  - path: ^/res-23$
+    service: http://127.0.0.1:38112
+  - path: ^/res-24$
+    service: http://127.0.0.1:38113
   - service: http://127.0.0.1:$SUB_PORT
 EOF2
     else
