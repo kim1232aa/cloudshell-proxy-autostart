@@ -12,6 +12,10 @@ SLOT_COUNT="${KUI_SLOT_COUNT:-24}"
 FIRST_SOCKS=7920
 LAST_SOCKS=$((FIRST_SOCKS + SLOT_COUNT - 1))
 
+# single instance: started from both the boot hook and ~/.bashrc
+exec 9>/tmp/supervise.lock
+flock -n 9 || exit 0
+
 KUI_PASS=""
 [ -f "$CONFIG_DIR/kui-password" ] && KUI_PASS=$(cat "$CONFIG_DIR/kui-password")
 
@@ -35,10 +39,13 @@ while true; do
       [ -d "$KUI_DIR" ] && docker build -t kui-local:latest "$KUI_DIR" >/dev/null 2>&1
     fi
     if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx kui-test; then
+      # loopback-only publishing: kui's API and socks are only needed by the
+      # local sing-box/subserver, never by the outside (Cloud Shell VMs have
+      # no public IP, but keep the surface minimal anyway)
       docker start kui-test >/dev/null 2>&1 || docker run -d --name kui-test --cap-add NET_ADMIN --device /dev/net/tun \
         -e KUI_MANAGEMENT_USER=admin -e KUI_MANAGEMENT_PASSWORD="$KUI_PASS" \
         -e KUI_SLOT_COUNT="$SLOT_COUNT" -e KUI_DIAL_WORKERS=4 \
-        -p 8090:8080 -p "$FIRST_SOCKS-$LAST_SOCKS:$FIRST_SOCKS-$LAST_SOCKS" \
+        -p "127.0.0.1:8090:8080" -p "127.0.0.1:$FIRST_SOCKS-$LAST_SOCKS:$FIRST_SOCKS-$LAST_SOCKS" \
         -v "$KUI_DATA:/opt/kui-local" \
         kui-local:latest >/dev/null 2>&1
     fi

@@ -41,8 +41,9 @@ from `kui-patches/`, builds the `kui-local:latest` image, generates a random
 `/res-NN` paths. It prints your dynamic subscription URL when done.
 
 `~/kui-data` (kui state) and `~/proxy-bin` (configs, password, binaries) live in
-the persistent `$HOME`, so the whole layer comes back after a VM recycle via the
-existing boot hook + `.bashrc` supervise hook.
+the persistent `$HOME`, so the whole layer comes back after a VM recycle: the
+boot hook runs `proxy-start.sh`, which in turn starts `supervise.sh` (flock-guarded,
+so the extra `~/.bashrc` hook on interactive logins is harmless).
 
 ## Subscription behavior
 

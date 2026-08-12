@@ -65,6 +65,16 @@ if [ -f "$BIN/subserver.py" ] && [ -f "$BIN/sub-path" ] \
   nohup python3 "$BIN/subserver.py" >>"$LOG" 2>&1 &
 fi
 
+# Residential layer (optional): start its supervisor if installed. This closes
+# the recycle gap — the boot hook only runs this script, and supervise.sh was
+# previously hooked to ~/.bashrc (interactive logins only), so a recycled VM
+# never brought sing-box/kui back by itself. supervise.sh converges in the
+# background (15 s loop, flock-guarded), missing components start within one
+# tick of their config appearing.
+if [ -f "$BIN/supervise.sh" ] && ! pgrep -f "proxy-bin/supervise.sh" >/dev/null 2>&1; then
+  setsid "$BIN/supervise.sh" >/dev/null 2>&1 &
+fi
+
 # Fast path: proxy already running with a valid link — reprint and exit.
 # (never clobber a good link file just because the URL isn't in the log anymore)
 if pgrep -x xray >/dev/null 2>&1 && pgrep -f "cloudflared tunnel" >/dev/null 2>&1 \
@@ -510,6 +520,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/yaml; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        # dynamic content: never let a client cache a stale exit list
+        self.send_header("Cache-Control", "no-store")
+        # Clash shows an info bar off this header; we have no real counters
+        self.send_header("Subscription-Userinfo",
+                         "upload=0; download=0; total=107374182400; expire=0")
         self.end_headers()
         self.wfile.write(data)
 

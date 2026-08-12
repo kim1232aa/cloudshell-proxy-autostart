@@ -37,6 +37,16 @@ if [ -f "$BIN/subserver.py" ] && [ -f "$BIN/sub-path" ] \
   nohup python3 "$BIN/subserver.py" >>"$LOG" 2>&1 &
 fi
 
+# Residential layer (optional): start its supervisor if installed. This closes
+# the recycle gap — the boot hook only runs this script, and supervise.sh was
+# previously hooked to ~/.bashrc (interactive logins only), so a recycled VM
+# never brought sing-box/kui back by itself. supervise.sh converges in the
+# background (15 s loop, flock-guarded), missing components start within one
+# tick of their config appearing.
+if [ -f "$BIN/supervise.sh" ] && ! pgrep -f "proxy-bin/supervise.sh" >/dev/null 2>&1; then
+  setsid "$BIN/supervise.sh" >/dev/null 2>&1 &
+fi
+
 # Fast path: proxy already running with a valid link — reprint and exit.
 # (never clobber a good link file just because the URL isn't in the log anymore)
 if pgrep -x xray >/dev/null 2>&1 && pgrep -f "cloudflared tunnel" >/dev/null 2>&1 \

@@ -281,6 +281,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/yaml; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        # dynamic content: never let a client cache a stale exit list
+        self.send_header("Cache-Control", "no-store")
+        # Clash shows an info bar off this header; we have no real counters
+        self.send_header("Subscription-Userinfo",
+                         "upload=0; download=0; total=107374182400; expire=0")
         self.end_headers()
         self.wfile.write(data)
 
