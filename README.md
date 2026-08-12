@@ -110,6 +110,24 @@ bash ~/proxy-start.sh
 From now on every account's Cloud Shell joins the same tunnel; one client config works
 regardless of which account is currently running.
 
+### Hosting a Clash subscription on the tunnel (optional, creds mode)
+
+The named tunnel can also serve your Clash subscription, so updating preferred IPs
+is a server-side edit instead of re-importing links:
+
+```bash
+# on each account's Cloud Shell:
+echo "/sub-$(openssl rand -hex 16)" > ~/proxy-bin/sub-path   # one secret path, same everywhere
+nano ~/proxy-bin/sub.yaml                                    # your Clash Meta YAML
+bash ~/proxy-start.sh                                        # re-run: adds path-split ingress
+```
+
+Ingress becomes `/vless` → xray, everything else → `subserver.py` (127.0.0.1:38081),
+which returns the YAML at the exact secret path and a bare 404 for anything else
+(no directory listing). Subscribe at `https://<host><secret-path>` — the URL is a
+credential, treat it like a password. Token-mode (dashboard) tunnels: configure the
+same path split as two Public Hostname/ingress rules in the dashboard instead.
+
 ## 3. Watchdog container (self-contained monitor + failover)
 
 ```bash
@@ -195,6 +213,7 @@ probe — and in docker also gcloud itself — via a local proxy, e.g.
 | `.customize_environment` | Cloud Shell | Official boot hook, hands off to `proxy-start.sh` at every boot |
 | `watchdog.sh` | Local / container | Probe, keepalive, quota-aware multi-account failover; cron or `--loop` |
 | `cf-setup.sh` | Local | Create named tunnel + DNS route via local cloudflared login (no dashboard) |
+| `subserver.py` | Cloud Shell | Optional: serve Clash subscription at one secret path (creds mode) |
 | `Dockerfile`, `docker-entrypoint.sh`, `docker-compose.yml` | Local | Self-contained watchdog container (`state/` volume holds everything) |
 
 ## Disclaimer

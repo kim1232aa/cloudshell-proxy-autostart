@@ -20,9 +20,18 @@ HOST_FILE="$BIN/cf-hostname"
 CREDS_FILE="$BIN/cf-tunnel-creds.json"
 CF_CONFIG="$BIN/cf-config.yml"
 VLESS_PORT=38080
+SUB_PORT=38081
 WS_PATH="/vless"
 
 mkdir -p "$BIN"
+
+# Optional subscription server: serves ~/proxy-bin/sub.yaml at the exact secret
+# path in ~/proxy-bin/sub-path, 404 for everything else (started even on the
+# fast path so it can be added to an already-running instance)
+if [ -f "$BIN/sub.yaml" ] && [ -f "$BIN/sub-path" ] && [ -f "$BIN/subserver.py" ] \
+   && ! pgrep -f "subserver.py" >/dev/null 2>&1; then
+  nohup python3 "$BIN/subserver.py" >>"$LOG" 2>&1 &
+fi
 
 # Fast path: proxy already running with a valid link — reprint and exit.
 # (never clobber a good link file just because the URL isn't in the log anymore)
@@ -69,12 +78,24 @@ if ! pgrep -f "cloudflared tunnel" >/dev/null 2>&1; then
   [ -f "$LOG" ] && mv "$LOG" "$LOG.old"
   if [ -s "$CREDS_FILE" ]; then
     TID=$(grep -oE '"TunnelID"[ ]*:[ ]*"[^"]+"' "$CREDS_FILE" | cut -d'"' -f4)
-    cat > "$CF_CONFIG" <<EOF2
+    if [ -f "$BIN/sub.yaml" ] && [ -f "$BIN/sub-path" ]; then
+      # path-split: /vless -> xray, everything else -> subscription server
+      cat > "$CF_CONFIG" <<EOF2
+tunnel: $TID
+credentials-file: $CREDS_FILE
+ingress:
+  - path: ^${WS_PATH}\$
+    service: http://127.0.0.1:$VLESS_PORT
+  - service: http://127.0.0.1:$SUB_PORT
+EOF2
+    else
+      cat > "$CF_CONFIG" <<EOF2
 tunnel: $TID
 credentials-file: $CREDS_FILE
 ingress:
   - service: http://127.0.0.1:$VLESS_PORT
 EOF2
+    fi
     nohup "$BIN/cloudflared" tunnel --config "$CF_CONFIG" --no-autoupdate --protocol http2 run >>"$LOG" 2>&1 &
   elif [ -s "$TOKEN_FILE" ]; then
     nohup "$BIN/cloudflared" tunnel --no-autoupdate --protocol http2 --token "$(cat "$TOKEN_FILE")" run >>"$LOG" 2>&1 &
