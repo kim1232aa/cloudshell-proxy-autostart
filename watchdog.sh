@@ -6,10 +6,10 @@
 #      e.g. xray's 400, means a live tunnel connector)
 #   2. alive  -> optionally "tickle" the current account's Cloud Shell with a
 #                short ssh session, ahead of the 40-min non-interactive timeout
-#   3. dead   -> rotate across gcloud configurations, skipping accounts with
-#                broken auth or recently-exhausted weekly quota, and boot the
-#                first usable account's Cloud Shell (its boot hook rebuilds
-#                the proxy automatically)
+#   3. dead   -> rotate across gcloud configurations and boot the first account
+#                whose Cloud Shell actually comes up. No quota bookkeeping:
+#                a shell that cannot start — quota exhausted, auth broken,
+#                anything — simply fails and the next account is tried.
 #
 # Usage:
 #   watchdog.sh <tunnel-hostname>           single check (cron)
@@ -22,7 +22,6 @@
 #   PROBE_PROXY=             e.g. http://172.17.0.1:7890 — route probe via local proxy
 #   KEEPALIVE=1              0 disables the keepalive tickle
 #   KEEPALIVE_INTERVAL=1500  seconds between tickles (must stay < 40 min)
-#   QUOTA_COOLDOWN_DAYS=7    skip quota-exhausted accounts for this long
 #   WS_PATH=/vless           probe path
 #   STATE_DIR=~/.cache/gcs-watchdog
 #
@@ -45,7 +44,6 @@ INTERVAL="${INTERVAL:-180}"
 PROBE_PROXY="${PROBE_PROXY:-}"
 KEEPALIVE="${KEEPALIVE:-1}"
 KEEPALIVE_INTERVAL="${KEEPALIVE_INTERVAL:-1500}"
-QUOTA_COOLDOWN_DAYS="${QUOTA_COOLDOWN_DAYS:-7}"
 WS_PATH="${WS_PATH:-/vless}"
 STATE_DIR="${STATE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/gcs-watchdog}"
 mkdir -p "$STATE_DIR"
@@ -78,33 +76,16 @@ probe() {
 
 list_configs() { gcloud config configurations list --format='value(name)' 2>/dev/null; }
 
-is_exhausted() { # $1=config; rc 0 = in quota cooldown
-  local f="$STATE_DIR/exhausted-$1" marked age
-  [ -f "$f" ] || return 1
-  marked=$(cat "$f")
-  age=$(( $(date -u +%s) - marked ))
-  if [ "$age" -ge $(( QUOTA_COOLDOWN_DAYS * 86400 )) ]; then
-    rm -f "$f"; log "$1: quota cooldown over, eligible again"
-    return 1
-  fi
-  return 0
-}
-
 account_ok() { CLOUDSDK_ACTIVE_CONFIG_NAME="$1" gcloud auth print-access-token >/dev/null 2>&1; }
 
-rebuild_on() { # $1=config; stdout=vless link; rc: 0 ok, 1 fail, 2 quota-exhausted
+rebuild_on() { # $1=config; stdout=vless link; rc: 0 ok, 1 fail (any reason)
   local out rc link
   out=$(CLOUDSDK_ACTIVE_CONFIG_NAME="$1" timeout 240 gcloud cloud-shell ssh \
         --ssh-flag="-o BatchMode=yes" --quiet \
         --command="bash ~/proxy-start.sh >/dev/null 2>&1; head -1 ~/proxy-link.txt 2>/dev/null" 2>&1)
   rc=$?
-  if echo "$out" | grep -qiE 'quota|usage limit|temporarily exceeded|RESOURCE_EXHAUSTED'; then
-    date -u +%s > "$STATE_DIR/exhausted-$1"
-    log "$1: QUOTA EXHAUSTED, cooldown ${QUOTA_COOLDOWN_DAYS}d"
-    return 2
-  fi
   if [ $rc -ne 0 ]; then
-    log "$1: ssh failed (rc=$rc): $(echo "$out" | tail -1)"
+    log "$1: shell could not start (rc=$rc): $(echo "$out" | tail -1)"
     return 1
   fi
   link=$(echo "$out" | grep -oE '^vless://[^[:space:]]+' | head -1)
@@ -125,7 +106,6 @@ failover() {
   for ((k = 1; k < ${#cfgs[@]}; k++)); do order+=( $(( (cur + k) % ${#cfgs[@]} )) ); done
   for i in "${order[@]}"; do
     cfg="${cfgs[$i]}"
-    is_exhausted "$cfg" && { log "$cfg: skip (quota cooldown)"; continue; }
     account_ok "$cfg" || { log "$cfg: skip (auth invalid — run: docker compose run --rm watchdog auth $cfg)"; continue; }
     log "$cfg: triggering Cloud Shell rebuild..."
     if link=$(rebuild_on "$cfg"); then
@@ -137,7 +117,7 @@ failover() {
       return 0
     fi
   done
-  log "FAILOVER FAILED: no usable account (all quota-exhausted or auth-broken?)"
+  log "FAILOVER FAILED: no account's Cloud Shell could be started"
   echo "$(ts) DOWN all-accounts-failed" > "$STATUS_FILE"
   return 1
 }

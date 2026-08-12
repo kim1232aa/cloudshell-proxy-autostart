@@ -28,7 +28,8 @@ Cloud Shell VM (any of your Google accounts)
 local watchdog container (no proxy traffic passes through it)
    ├─ probes https://<host>/vless every INTERVAL
    ├─ keepalive ssh tickle (< 40-min non-interactive timeout)
-   └─ on failure / quota exhaustion: boots the next account's Cloud Shell
+   └─ on failure: boots the next account's Cloud Shell (any boot failure —
+      quota exhausted, broken auth — just skips to the next account)
 ```
 
 - `xray` listens only on loopback; the only ingress is the cloudflared tunnel.
@@ -165,14 +166,15 @@ persists its own ssh keypair (`/state/ssh`), which gcloud uploads automatically 
 connect (verified: the very first `gcloud cloud-shell ssh` does keygen + registration
 by itself).
 
-### Quota-aware rotation
+### Failure-driven rotation
 
 Cloud Shell gives **50 h/week per account** ([docs](https://docs.cloud.google.com/shell/docs/quotas-limits));
-there is **no public API for remaining hours** — the only official view is the web UI
-(*Session information → Usage quota*). So detection is reactive: when an account's
-`gcloud cloud-shell ssh` fails with a quota/limit error, the watchdog marks it
-exhausted and skips it for `QUOTA_COOLDOWN_DAYS` (default 7, i.e. until the weekly
-reset). 4 accounts × 50 h = 200 h > 168 h — enough to cover a full week.
+there is **no public API for remaining hours** — so the watchdog does not try to
+track them. Rotation is purely failure-driven: when the probe dies it walks your
+accounts and boots the first one whose `gcloud cloud-shell ssh` actually succeeds.
+A quota-exhausted account fails that attempt (gcloud reports an error, rc ≠ 0)
+and the next account is tried — no quota bookkeeping, no cooldowns. 4 accounts ×
+50 h = 200 h > 168 h — enough to cover a full week.
 
 ### Ops
 
@@ -188,7 +190,7 @@ Useful env knobs (compose `.env`): `INTERVAL` (probe seconds, default 180),
 some networks; 502/503/530 are believed immediately), `PROBE_PROXY` (route the
 probe — and in docker also gcloud itself — via a local proxy, e.g.
 `http://172.17.0.1:7890`), `KEEPALIVE` / `KEEPALIVE_INTERVAL` (default 1500 s <
-40-min timeout), `QUOTA_COOLDOWN_DAYS`.
+40-min timeout).
 
 ### How auth persists
 

@@ -15,7 +15,6 @@ services:
       PROBE_RETRIES: ${PROBE_RETRIES:-4}
       KEEPALIVE: ${KEEPALIVE:-1}
       KEEPALIVE_INTERVAL: ${KEEPALIVE_INTERVAL:-1500}
-      QUOTA_COOLDOWN_DAYS: ${QUOTA_COOLDOWN_DAYS:-7}
     volumes:
       - ./state:/state
 
