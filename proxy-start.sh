@@ -22,6 +22,15 @@ WS_PATH="/vless"
 
 mkdir -p "$BIN"
 
+# Fast path: proxy already running with a valid link — reprint and exit.
+# (never clobber a good link file just because the URL isn't in the log anymore)
+if pgrep -x xray >/dev/null 2>&1 && pgrep -f "cloudflared tunnel" >/dev/null 2>&1 \
+   && [ -f "$LINK" ] && grep -q '^vless://' "$LINK" 2>/dev/null; then
+  grep '^vless://' "$LINK" | head -1
+  echo "PROXY_READY (already running)"
+  exit 0
+fi
+
 # Wait for outbound network (early boot may have no connectivity yet)
 for _ in $(seq 1 30); do
   curl -s -m 3 -o /dev/null https://github.com && break

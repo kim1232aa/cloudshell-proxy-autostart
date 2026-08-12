@@ -1,0 +1,26 @@
+services:
+  watchdog:
+    build: .
+    image: cloudshell-proxy-watchdog
+    container_name: gcs-watchdog
+    restart: unless-stopped
+    # host networking: the probe then behaves exactly like the host (avoids
+    # docker-bridge subnet collisions with WSL gateways and flaky NAT paths).
+    # The container exposes no ports, so this is safe.
+    network_mode: host
+    environment:
+      TUNNEL_HOST: ${TUNNEL_HOST:?create .env with TUNNEL_HOST=gcs.example.com}
+      INTERVAL: ${INTERVAL:-180}
+      PROBE_PROXY: ${PROBE_PROXY:-}
+      PROBE_RETRIES: ${PROBE_RETRIES:-4}
+      KEEPALIVE: ${KEEPALIVE:-1}
+      KEEPALIVE_INTERVAL: ${KEEPALIVE_INTERVAL:-1500}
+      QUOTA_COOLDOWN_DAYS: ${QUOTA_COOLDOWN_DAYS:-7}
+    volumes:
+      - ./state:/state
+
+# Add a Google account (one per config, you do the browser part):
+#   docker compose run --rm watchdog auth acct-a
+#   docker compose run --rm watchdog auth acct-b
+# Force an immediate failover (ops/testing):
+#   docker compose run --rm watchdog --force

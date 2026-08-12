@@ -1,11 +1,12 @@
 # cloudshell-proxy-autostart
 
-Self-healing VLESS+WS proxy on Google Cloud Shell, fronted by Cloudflare Tunnel.
-Survives Cloud Shell VM recycling: boot hook rebuilds the whole stack automatically.
+Self-healing VLESS+WS proxy on Google Cloud Shell, fronted by Cloudflare Tunnel —
+plus a self-contained local watchdog container that keeps it alive and rotates
+across multiple Google accounts when one dies or runs out of weekly quota.
 
-> 中文速览：在 Cloud Shell 里跑一行 `install.sh`，自动装好 xray(vless+ws) + cloudflared，
-> 输出一条 vless:// 链接导入客户端即可。实例被回收后重开 Cloud Shell 会自启重建。
-> 多 Google 账户 + Cloudflare 命名隧道可实现固定域名、掉线自动切换（见下文 Multi-account HA）。
+> 中文速览：Cloud Shell 里跑一行 `install.sh`，自动装好 xray(vless+ws) + cloudflared 并输出 vless:// 链接。
+> 本机只需 docker：watchdog 容器负责探活、保活、额度耗尽自动轮换账户（容器不过流量，中转由 Cloudflare 优选 IP 完成）。
+> 授权在容器内完成（`--no-browser`，浏览器部分你自己点），凭证全部留在容器卷里。
 
 ## Architecture
 
@@ -13,18 +14,25 @@ Survives Cloud Shell VM recycling: boot hook rebuilds the whole stack automatica
 client (Clash / v2rayN / Nekoray ...)
    │  vless+ws+tls :443
    ▼
-Cloudflare edge  (preferred-IP capable)
+Cloudflare edge  (preferred-IP capable)   ◄── the actual relay
    │  cloudflared tunnel (HTTP/2)
    ▼
-Cloud Shell VM
+Cloud Shell VM (any of your Google accounts)
    ├─ cloudflared ──► 127.0.0.1:38080
    └─ xray (vless+ws inbound, freedom outbound)
+
+local watchdog container (no proxy traffic passes through it)
+   ├─ probes https://<host>/vless every INTERVAL
+   ├─ keepalive ssh tickle (< 40-min non-interactive timeout)
+   └─ on failure / quota exhaustion: boots the next account's Cloud Shell
 ```
 
 - `xray` listens only on loopback; the only ingress is the cloudflared tunnel.
 - cloudflared uses `--protocol http2` (measured much faster than QUIC from Cloud Shell egress).
-- `$HOME` (5 GB) persists across recycling, so binaries, UUID and the boot hook survive.
-- `~/.customize_environment` is the official boot hook — it restarts everything after each rebuild.
+- `$HOME` (5 GB) persists across recycling: binaries, UUID, tokens and the boot hook survive.
+- `~/.customize_environment` is the official boot hook — it rebuilds the proxy at every boot.
+- The watchdog container is fully self-contained: gcloud credentials, ssh keypair and
+  state live in the `./state` volume. The host only needs docker.
 
 ## Measured throughput
 
@@ -44,11 +52,12 @@ anycast IP/domain for your ISP; keep `sni`/`host` unchanged.
 
 ## Requirements
 
-- A Google account with Cloud Shell access.
+- A Google account with Cloud Shell access (several accounts for HA rotation).
+- Docker (or any cron-capable shell, if you prefer running `watchdog.sh` directly).
 - (HA mode) A Cloudflare account + a domain on Cloudflare nameservers.
 - Client that speaks vless+ws+tls (Clash-Meta/mihomo, v2rayN, Nekoray, sing-box, ...).
 
-## Quick start (single account, quick tunnel)
+## 1. Cloud Shell side (per Google account)
 
 Inside [Google Cloud Shell](https://shell.cloud.google.com):
 
@@ -57,81 +66,110 @@ bash <(curl -sSL https://raw.githubusercontent.com/kim1232aa/cloudshell-proxy-au
 ```
 
 It downloads xray + cloudflared into `~/proxy-bin`, installs `~/proxy-start.sh` and the
-boot hook, starts everything, and prints your link (also saved to `~/proxy-link.txt`):
+boot hook, starts everything, and prints your link (also saved to `~/proxy-link.txt`).
 
-```
-vless://<uuid>@<random>.trycloudflare.com:443?type=ws&security=tls&...
-```
+**After a VM recycle:** reopen Cloud Shell (web or `gcloud cloud-shell ssh`) — the boot
+hook rebuilds the proxy; `cat ~/proxy-link.txt` for the (new, quick-tunnel) link.
+The watchdog below automates exactly this.
 
-Import it into your client. Done.
+## 2. Multi-account HA (named tunnel, fixed hostname)
 
-### After Cloud Shell recycles the VM
-
-1. Reopen Cloud Shell (web or `gcloud cloud-shell ssh`) — the boot hook rebuilds the proxy.
-2. `cat ~/proxy-link.txt` — the quick-tunnel hostname changes every rebuild, so update
-   your client with the new link.
-
-Nothing else to do; binaries and UUID are reused from `$HOME`.
-
-## Multi-account HA (named tunnel, fixed hostname)
-
-Quick tunnels give a random hostname per boot — fine for one account, annoying for
-failover. A **named Cloudflare Tunnel** gives you one fixed hostname backed by multiple
-Cloud Shell replicas (different Google accounts). Whichever replica is alive serves the
-hostname; Cloudflare load-balances between connectors automatically.
+Quick tunnels get a random hostname per boot — fine solo, annoying for failover.
+A **named Cloudflare Tunnel** gives one fixed hostname backed by replicas on multiple
+accounts; Cloudflare routes to whichever connector is alive.
 
 One-time Cloudflare setup:
 
-1. [Cloudflare Zero Trust dashboard](https://one.dash.cloudflare.com) → **Networks → Tunnels → Add a tunnel** → type `cloudflared`.
-2. Copy the tunnel token (starts with `eyJ...`).
-3. Add a **Public Hostname**, e.g. `gcs.example.com`, service = `http://127.0.0.1:38080`.
+1. [Zero Trust dashboard](https://one.dash.cloudflare.com) → **Networks → Tunnels → Add a tunnel** → `cloudflared`.
+2. Copy the tunnel token (`eyJ...`).
+3. Add a **Public Hostname**, e.g. `gcs.example.com`, service `http://127.0.0.1:38080`.
 
-Per Google account (repeat for each):
-
-```bash
-# inside that account's Cloud Shell
-bash <(curl -sSL https://raw.githubusercontent.com/kim1232aa/cloudshell-proxy-autostart/main/install.sh)
-
-echo '<tunnel-token>'   > ~/proxy-bin/cf-tunnel-token
-echo 'gcs.example.com'  > ~/proxy-bin/cf-hostname
-
-# all accounts MUST share one UUID: copy the file generated on the first account
-# (first account: ~/proxy-bin/uuid) into the same path on every other account.
-
-bash ~/proxy-start.sh   # re-join as a named-tunnel replica
-cat ~/proxy-link.txt    # same fixed hostname on every account
-```
-
-Now every account's Cloud Shell joins the same tunnel. One client config works forever —
-no more link updates.
-
-### Watchdog: auto-failover from your machine
-
-`watchdog.sh` (run locally, e.g. WSL/Linux cron) probes the hostname; when the tunnel
-stops answering, it rotates to the next gcloud configuration and boots that account's
-Cloud Shell — its boot hook rebuilds the proxy and rejoins the tunnel.
+Per Google account (in that account's Cloud Shell, after step 1):
 
 ```bash
-# one gcloud configuration per account:
-gcloud config configurations create acct-a
-gcloud config configurations activate acct-a
-gcloud auth login
-gcloud cloud-shell ssh --authorize-session   # once per account, registers the SSH key
-# repeat for acct-b, acct-c, ...
-
-# crontab -e:
-*/3 * * * * /path/to/watchdog.sh gcs.example.com >>/tmp/gcs-watchdog.log 2>&1
+echo '<tunnel-token>'  > ~/proxy-bin/cf-tunnel-token
+echo 'gcs.example.com' > ~/proxy-bin/cf-hostname
+# every account MUST share one UUID: copy ~/proxy-bin/uuid from the first account
+bash ~/proxy-start.sh
 ```
 
-Typical failover: 1–3 minutes (detection interval + Cloud Shell provisioning).
+From now on every account's Cloud Shell joins the same tunnel; one client config works
+regardless of which account is currently running.
+
+## 3. Watchdog container (self-contained monitor + failover)
+
+```bash
+git clone https://github.com/kim1232aa/cloudshell-proxy-autostart
+cd cloudshell-proxy-autostart
+echo 'TUNNEL_HOST=gcs.example.com' > .env     # or your current quick-tunnel host
+docker compose up -d --build
+```
+
+It probes the hostname every 3 minutes. On failure it walks your gcloud
+configurations, skips accounts with broken auth or quota cooldown, and boots the next
+account's Cloud Shell — whose boot hook rebuilds the proxy and rejoins the tunnel.
+Typical failover: 1–3 minutes.
+
+### Adding accounts (you do the browser part)
+
+```bash
+docker compose run --rm watchdog auth acct-a
+docker compose run --rm watchdog auth acct-b   # ...repeat per account
+```
+
+Each runs `gcloud auth login --no-browser` **inside the container**: you open the
+printed URL in your own browser, authorize, paste the result back. Credentials are
+stored only in the `./state` volume (`/state/gcloud`) — nothing is written to the host.
+No host gcloud installation or host ssh keys are needed; the container generates and
+persists its own ssh keypair (`/state/ssh`), which gcloud uploads automatically on
+connect (verified: the very first `gcloud cloud-shell ssh` does keygen + registration
+by itself).
+
+### Quota-aware rotation
+
+Cloud Shell gives **50 h/week per account** ([docs](https://docs.cloud.google.com/shell/docs/quotas-limits));
+there is **no public API for remaining hours** — the only official view is the web UI
+(*Session information → Usage quota*). So detection is reactive: when an account's
+`gcloud cloud-shell ssh` fails with a quota/limit error, the watchdog marks it
+exhausted and skips it for `QUOTA_COOLDOWN_DAYS` (default 7, i.e. until the weekly
+reset). 4 accounts × 50 h = 200 h > 168 h — enough to cover a full week.
+
+### Ops
+
+```bash
+docker logs -f gcs-watchdog          # live monitor log (UTC timestamps)
+cat state/status                     # last known state
+cat state/proxy-link.txt             # latest link (changes on quick-tunnel rebuilds)
+docker compose run --rm watchdog --force   # force an immediate failover
+```
+
+Useful env knobs (compose `.env`): `INTERVAL` (probe seconds, default 180),
+`PROBE_RETRIES` (000-retries before declaring dead, default 4 — 000 is flaky on
+some networks; 502/503/530 are believed immediately), `PROBE_PROXY` (route the
+probe — and in docker also gcloud itself — via a local proxy, e.g.
+`http://172.17.0.1:7890`), `KEEPALIVE` / `KEEPALIVE_INTERVAL` (default 1500 s <
+40-min timeout), `QUOTA_COOLDOWN_DAYS`.
+
+### How auth persists
+
+- **gcloud OAuth**: refresh tokens in `/state/gcloud` (container volume). They survive
+  container restarts/rebuilds and only die if revoked, if the Google password changes,
+  or after ~6 months unused. Re-run `auth <name>` to repair.
+- **Cloud Shell side**: each account's `$HOME` persists (5 GB), so `cf-tunnel-token`,
+  `cf-hostname`, `uuid`, the binaries and the boot hook all survive VM recycling.
+  `$HOME` is deleted after **120 days** of account inactivity — the watchdog's regular
+  sessions prevent that too.
+- **ssh key**: container-generated, persisted in `/state/ssh`; gcloud re-uploads the
+  public key on every connect, so a fresh container needs zero manual setup.
 
 ## Hard limits (read before relying on this)
 
-- Cloud Shell has a **weekly usage quota (~50 h)** and instances can be recycled at any
-  time. Multi-account rotation stretches, not removes, the quota.
-- Quick-tunnel hostnames are **random per boot** — use a named tunnel for anything stable.
-- Cloud Shell egress is solid (~26 MB/s single stream in tests) but throughput through the
-  tunnel depends heavily on your preferred-IP choice.
+- 50 h/week/account usage quota; sessions capped at 12 h; non-interactive sessions are
+  terminated after 40 min (the keepalive + dead-probe + auto-rebuild combo covers this:
+  worst case is one probe interval of downtime).
+- Quick-tunnel hostnames are random per boot — use a named tunnel for anything stable.
+- Cloud Shell egress is solid (~26 MB/s single stream in tests) but end-to-end speed
+  depends heavily on your preferred-IP choice.
 - Google can throttle or restrict accounts for ToS violations. See below.
 
 ## Files
@@ -141,7 +179,8 @@ Typical failover: 1–3 minutes (detection interval + Cloud Shell provisioning).
 | `install.sh` | Cloud Shell | One-shot installer (self-contained, embeds the other two scripts) |
 | `proxy-start.sh` | Cloud Shell | Rebuilds xray + cloudflared; idempotent; named/quick tunnel auto-detect |
 | `.customize_environment` | Cloud Shell | Official boot hook, hands off to `proxy-start.sh` at every boot |
-| `watchdog.sh` | Local machine | cron failover across gcloud configurations (HA mode) |
+| `watchdog.sh` | Local / container | Probe, keepalive, quota-aware multi-account failover; cron or `--loop` |
+| `Dockerfile`, `docker-entrypoint.sh`, `docker-compose.yml` | Local | Self-contained watchdog container (`state/` volume holds everything) |
 
 ## Disclaimer
 

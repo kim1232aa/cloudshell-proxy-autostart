@@ -1,50 +1,188 @@
 #!/bin/bash
-# watchdog.sh — local cron job for multi-account HA.
-# Checks the proxy endpoint; when it is down, rotates to the next gcloud
-# configuration and triggers a Cloud Shell rebuild (the boot hook on the new
-# instance restarts the proxy automatically).
+# watchdog.sh — Cloud Shell proxy monitor, keepalive & multi-account failover.
 #
-# Setup:
-#   1. Create one gcloud configuration per Google account:
-#        gcloud config configurations create acct-a
-#        gcloud config configurations activate acct-a
-#        gcloud auth login
-#        gcloud cloud-shell ssh --authorize-session   # once per account, registers the SSH key
-#      repeat for acct-b, acct-c, ...
-#   2. crontab -e:
-#        */3 * * * * /path/to/watchdog.sh gcs.example.com >>/tmp/gcs-watchdog.log 2>&1
+# Each cycle:
+#   1. probe https://<tunnel-host>/vless (dead = 000/502/503/530; anything else,
+#      e.g. xray's 400, means a live tunnel connector)
+#   2. alive  -> optionally "tickle" the current account's Cloud Shell with a
+#                short ssh session, ahead of the 40-min non-interactive timeout
+#   3. dead   -> rotate across gcloud configurations, skipping accounts with
+#                broken auth or recently-exhausted weekly quota, and boot the
+#                first usable account's Cloud Shell (its boot hook rebuilds
+#                the proxy automatically)
+#
+# Usage:
+#   watchdog.sh <tunnel-hostname>           single check (cron)
+#   watchdog.sh <tunnel-hostname> --loop    endless loop (docker)
+#   watchdog.sh <tunnel-hostname> --force   failover immediately (ops/testing)
+#   TUNNEL_HOST may be given as env instead of the argument.
+#
+# Env knobs (all optional):
+#   INTERVAL=180             seconds between cycles in --loop mode
+#   PROBE_PROXY=             e.g. http://172.17.0.1:7890 — route probe via local proxy
+#   KEEPALIVE=1              0 disables the keepalive tickle
+#   KEEPALIVE_INTERVAL=1500  seconds between tickles (must stay < 40 min)
+#   QUOTA_COOLDOWN_DAYS=7    skip quota-exhausted accounts for this long
+#   WS_PATH=/vless           probe path
+#   STATE_DIR=~/.cache/gcs-watchdog
+#
+# cron example:
+#   */3 * * * * /path/to/watchdog.sh gcs.example.com >>/tmp/gcs-watchdog.log 2>&1
 set -u
 
-HOST="${1:?usage: watchdog.sh <tunnel-hostname>}"
-STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/gcs-watchdog"
-STATE="$STATE_DIR/current-account"
+LOOP=0; FORCE=0; TUNNEL_HOST="${TUNNEL_HOST:-}"
+for a in "$@"; do
+  case "$a" in
+    --loop)  LOOP=1 ;;
+    --force) FORCE=1 ;;
+    --*) echo "unknown flag: $a" >&2; exit 64 ;;
+    *) [ -z "$TUNNEL_HOST" ] && TUNNEL_HOST="$a" ;;
+  esac
+done
+[ -z "$TUNNEL_HOST" ] && { echo "usage: watchdog.sh <tunnel-hostname> [--loop|--force]" >&2; exit 64; }
+
+INTERVAL="${INTERVAL:-180}"
+PROBE_PROXY="${PROBE_PROXY:-}"
+KEEPALIVE="${KEEPALIVE:-1}"
+KEEPALIVE_INTERVAL="${KEEPALIVE_INTERVAL:-1500}"
+QUOTA_COOLDOWN_DAYS="${QUOTA_COOLDOWN_DAYS:-7}"
+WS_PATH="${WS_PATH:-/vless}"
+STATE_DIR="${STATE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/gcs-watchdog}"
 mkdir -p "$STATE_DIR"
+CUR_FILE="$STATE_DIR/current-account"
+LINK_FILE="$STATE_DIR/proxy-link.txt"
+STATUS_FILE="$STATE_DIR/status"
+LAST_TICKLE="$STATE_DIR/last-tickle"
 
-# Alive = the edge returns any HTTP status (tunnel has a live replica).
-code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "https://$HOST/vless" || echo 000)
-if [ "$code" != "000" ]; then
-  echo "$(date -u '+%F %T') alive ($code)"
-  exit 0
+ts()  { date -u '+%F %T'; }
+log() { echo "$(ts) $*" >&2; }   # stderr: keeps stdout clean for captured values
+
+is_dead_code() { case "$1" in 000|502|503|530) return 0 ;; *) return 1 ;; esac; }
+
+probe() {
+  # 502/503/530 are deliberate Cloudflare "origin gone" answers -> dead at once.
+  # 000 (connect/TLS reset) is flaky on some networks -> retry before believing it.
+  local tries="${PROBE_RETRIES:-4}" i r
+  local args=(-s -m 10 -o /dev/null -w '%{http_code}'
+    -H 'Connection: Upgrade' -H 'Upgrade: websocket'
+    -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==')
+  [ -n "$PROBE_PROXY" ] && args+=(-x "$PROBE_PROXY")
+  for ((i = 0; i < tries; i++)); do
+    r=$(curl "${args[@]}" "https://$TUNNEL_HOST$WS_PATH" 2>/dev/null)
+    r="${r:-000}"
+    [ "$r" != "000" ] && { echo "$r"; return; }
+    [ $((i + 1)) -lt "$tries" ] && sleep 3
+  done
+  echo 000
+}
+
+list_configs() { gcloud config configurations list --format='value(name)' 2>/dev/null; }
+
+is_exhausted() { # $1=config; rc 0 = in quota cooldown
+  local f="$STATE_DIR/exhausted-$1" marked age
+  [ -f "$f" ] || return 1
+  marked=$(cat "$f")
+  age=$(( $(date -u +%s) - marked ))
+  if [ "$age" -ge $(( QUOTA_COOLDOWN_DAYS * 86400 )) ]; then
+    rm -f "$f"; log "$1: quota cooldown over, eligible again"
+    return 1
+  fi
+  return 0
+}
+
+account_ok() { CLOUDSDK_ACTIVE_CONFIG_NAME="$1" gcloud auth print-access-token >/dev/null 2>&1; }
+
+rebuild_on() { # $1=config; stdout=vless link; rc: 0 ok, 1 fail, 2 quota-exhausted
+  local out rc link
+  out=$(CLOUDSDK_ACTIVE_CONFIG_NAME="$1" timeout 240 gcloud cloud-shell ssh \
+        --ssh-flag="-o BatchMode=yes" --quiet \
+        --command="bash ~/proxy-start.sh >/dev/null 2>&1; head -1 ~/proxy-link.txt 2>/dev/null" 2>&1)
+  rc=$?
+  if echo "$out" | grep -qiE 'quota|usage limit|temporarily exceeded|RESOURCE_EXHAUSTED'; then
+    date -u +%s > "$STATE_DIR/exhausted-$1"
+    log "$1: QUOTA EXHAUSTED, cooldown ${QUOTA_COOLDOWN_DAYS}d"
+    return 2
+  fi
+  if [ $rc -ne 0 ]; then
+    log "$1: ssh failed (rc=$rc): $(echo "$out" | tail -1)"
+    return 1
+  fi
+  link=$(echo "$out" | grep -oE '^vless://[^[:space:]]+' | head -1)
+  [ -z "$link" ] && { log "$1: rebuild ok but no link returned"; return 1; }
+  echo "$link"
+}
+
+failover() {
+  local cfgs=() cur=-1 k i cfg link order=()
+  mapfile -t cfgs < <(list_configs)
+  [ "${#cfgs[@]}" -eq 0 ] && { log "no gcloud configurations found — run the auth helper first"; return 1; }
+  # sticky order: try the current account first, then rotate through the rest
+  cur=-1
+  [ -f "$CUR_FILE" ] && cur=$(cat "$CUR_FILE")
+  case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+  [ "$cur" -ge "${#cfgs[@]}" ] && cur=0
+  order+=("$cur")
+  for ((k = 1; k < ${#cfgs[@]}; k++)); do order+=( $(( (cur + k) % ${#cfgs[@]} )) ); done
+  for i in "${order[@]}"; do
+    cfg="${cfgs[$i]}"
+    is_exhausted "$cfg" && { log "$cfg: skip (quota cooldown)"; continue; }
+    account_ok "$cfg" || { log "$cfg: skip (auth invalid — run: docker compose run --rm watchdog auth $cfg)"; continue; }
+    log "$cfg: triggering Cloud Shell rebuild..."
+    if link=$(rebuild_on "$cfg"); then
+      echo "$i" > "$CUR_FILE"
+      echo "$link" > "$LINK_FILE"
+      date -u +%s > "$LAST_TICKLE"
+      log "$cfg: UP -> $link"
+      echo "$(ts) UP account=$cfg" > "$STATUS_FILE"
+      return 0
+    fi
+  done
+  log "FAILOVER FAILED: no usable account (all quota-exhausted or auth-broken?)"
+  echo "$(ts) DOWN all-accounts-failed" > "$STATUS_FILE"
+  return 1
+}
+
+tickle() { # keepalive: short ssh session on the current account
+  [ "$KEEPALIVE" = "1" ] || return 0
+  [ -f "$CUR_FILE" ] || return 0
+  local cfgs=() cfg last=0 now
+  mapfile -t cfgs < <(list_configs)
+  [ "${#cfgs[@]}" -eq 0 ] && return 0
+  cfg="${cfgs[$(cat "$CUR_FILE")]:-}"
+  [ -z "$cfg" ] && return 0
+  [ -f "$LAST_TICKLE" ] && last=$(cat "$LAST_TICKLE")
+  now=$(date -u +%s)
+  [ $(( now - last )) -lt "$KEEPALIVE_INTERVAL" ] && return 0
+  if CLOUDSDK_ACTIVE_CONFIG_NAME="$cfg" timeout 60 gcloud cloud-shell ssh \
+      --ssh-flag="-o BatchMode=yes" --quiet --command=true >/dev/null 2>&1; then
+    date -u +%s > "$LAST_TICKLE"
+    log "keepalive tickle ok ($cfg)"
+  else
+    log "keepalive tickle failed ($cfg)"
+  fi
+}
+
+check_once() {
+  local code
+  code=$(probe)
+  if is_dead_code "$code"; then
+    log "probe DOWN ($code) for $TUNNEL_HOST — failover starting"
+    echo "$(ts) DOWN probe=$code" > "$STATUS_FILE"
+    failover
+  else
+    log "alive ($code)"
+    echo "$(ts) UP probe=$code account=$(cat "$CUR_FILE" 2>/dev/null || echo '?')" > "$STATUS_FILE"
+    tickle
+  fi
+}
+
+if [ "$FORCE" = "1" ]; then
+  log "force failover requested"
+  failover
+  exit $?
 fi
 
-echo "$(date -u '+%F %T') DOWN, rotating account..."
-
-mapfile -t CFGS < <(gcloud config configurations list --format='value(name)' 2>/dev/null | grep -v '^default$' || true)
-if [ "${#CFGS[@]}" -eq 0 ]; then
-  echo "no gcloud configurations found, create them first"
-  exit 1
+check_once
+if [ "$LOOP" = "1" ]; then
+  while sleep "$INTERVAL"; do check_once; done
 fi
-
-cur=0
-[ -f "$STATE" ] && cur=$(cat "$STATE")
-cur=$(( (cur + 1) % ${#CFGS[@]} ))
-echo "$cur" > "$STATE"
-
-target="${CFGS[$cur]}"
-echo "switching to gcloud configuration: $target"
-gcloud config configurations activate "$target" --quiet || exit 1
-
-# Trigger instance provisioning; ~/.customize_environment rebuilds the proxy.
-gcloud cloud-shell ssh --command="echo rebuild-triggered $(date -u '+%F %T')" --quiet \
-  && echo "rebuild triggered on $target" \
-  || echo "rebuild trigger failed on $target"
