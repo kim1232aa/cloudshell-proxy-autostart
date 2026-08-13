@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """Dynamic Clash subscription server for the Cloud Shell proxy stack.
 
-Serves ONE secret path (read from `sub-path`). Content is generated per request from:
+Serves ONE secret path (read from `sub-path`), in three formats:
+  {sub-path}         — Clash YAML (dynamic; proxies, groups, rules)
+  {sub-path}/links   — standard v2ray base64 subscription (vless:// per line)
+  {sub-path}/sb.json — ready-to-run sing-box client config (local socks5 :1080,
+                       all nodes under a urltest outbound; for devices without
+                       Clash, e.g. a VPS running the official sing-box image)
+
+Content is generated per request from:
   - sub-front.yaml   : optional verbatim YAML fragment of front nodes (CF->CloudShell)
   - front-domains.txt: optional, one "domain [display name]" per line — front nodes
                        are generated from it when sub-front.yaml is absent
@@ -21,6 +28,7 @@ import base64
 import json
 import pathlib
 import time
+import urllib.parse
 import urllib.request
 import http.server
 
@@ -151,9 +159,8 @@ def kui_exits() -> list[dict]:
     return exits
 
 
-def res_node_yaml(slot: dict, domain: str, tag: str) -> str:
+def res_node_name(slot: dict, tag: str) -> str:
     slot_id = slot["id"]  # exit-01
-    num = slot_id.split("-", 1)[1]
     country = slot.get("country") or "??"
     isp = ""
     egress_type = ""
@@ -167,7 +174,100 @@ def res_node_yaml(slot: dict, domain: str, tag: str) -> str:
     name = f"{country}{kind}·{isp_short(isp)}·{slot_id}"
     if tag:
         name += f"·{tag}"
-    return _vless_node(name, domain, f"/res-{num}")
+    return name
+
+
+def res_node_yaml(slot: dict, domain: str, tag: str) -> str:
+    num = slot["id"].split("-", 1)[1]
+    return _vless_node(res_node_name(slot, tag), domain, f"/res-{num}")
+
+
+def front_pairs() -> list[tuple[str, str]]:
+    """(display name, entry domain) for each front node, from sub-front.yaml
+    or front-domains.txt — same sources as front_block()."""
+    if FRONT_FILE.exists():
+        pairs, name = [], None
+        for ln in FRONT_FILE.read_text(encoding="utf-8").splitlines():
+            s = ln.strip()
+            if s.startswith("- name:") and '"' in s:
+                name = json.loads(s.split(":", 1)[1].strip())
+            elif s.startswith("server:") and name is not None:
+                pairs.append((name, s.split(":", 1)[1].strip()))
+                name = None
+        return pairs
+    f = BASE / "front-domains.txt"
+    if f.exists():
+        return [((p[1] if len(p) > 1 else p[0]), p[0]) for p in _active_lines(f)]
+    return []
+
+
+def _live_exits() -> list[dict] | None:
+    try:
+        return [s for s in kui_exits() if s.get("state") == "ready" and s.get("egress_ip")]
+    except Exception:
+        return None
+
+
+def _vless_link(name: str, domain: str, path: str) -> str:
+    host = cf_host()
+    q = urllib.parse.urlencode({
+        "encryption": "none", "security": "tls", "sni": host,
+        "type": "ws", "host": host, "path": path, "fp": "chrome",
+    })
+    return f"vless://{vless_uuid()}@{domain}:443?{q}#{urllib.parse.quote(name)}"
+
+
+def build_links() -> str:
+    """Standard v2ray base64 subscription (one vless:// link per line) — same
+    nodes as the Clash YAML, for clients that only eat link lists."""
+    links = [_vless_link(n, d, "/vless") for n, d in front_pairs()]
+    for slot in _live_exits() or []:
+        num = slot["id"].split("-", 1)[1]
+        for domain, tag in res_domains():
+            links.append(_vless_link(res_node_name(slot, tag), domain, f"/res-{num}"))
+    return base64.b64encode("\n".join(links).encode()).decode() + "\n"
+
+
+def build_sb() -> str:
+    """Ready-to-run sing-box client config: local socks5 :1080, all nodes under
+    a urltest outbound. For devices without Clash (e.g. a VPS):
+
+      docker run -d --name gcs-socks --restart unless-stopped \
+        -p 127.0.0.1:1080:1080 -v $PWD/sb.json:/etc/sing-box/config.json:ro \
+        ghcr.io/sagernet/sing-box:latest run -c /etc/sing-box/config.json
+    """
+    host, uuid = cf_host(), vless_uuid()
+
+    def vless_out(name, domain, path):
+        return {
+            "type": "vless", "tag": name, "server": domain, "server_port": 443,
+            "uuid": uuid,
+            "tls": {"enabled": True, "server_name": host,
+                    "utls": {"enabled": True, "fingerprint": "chrome"}},
+            "transport": {"type": "ws", "path": path, "headers": {"Host": host}},
+        }
+
+    nodes = [vless_out(n, d, "/vless") for n, d in front_pairs()]
+    for slot in _live_exits() or []:
+        num = slot["id"].split("-", 1)[1]
+        for domain, tag in res_domains():
+            nodes.append(vless_out(res_node_name(slot, tag), domain, f"/res-{num}"))
+    tags = [o["tag"] for o in nodes]
+    cfg = {
+        "log": {"level": "warn", "timestamp": True},
+        "inbounds": [{"type": "socks", "tag": "socks-in",
+                      "listen": "0.0.0.0", "listen_port": 1080}],
+        "outbounds": [
+            {"type": "selector", "tag": "proxy",
+             "outbounds": ["auto"] + tags, "default": "auto"},
+            {"type": "urltest", "tag": "auto", "outbounds": tags,
+             "url": "http://www.gstatic.com/generate_204",
+             "interval": "5m", "tolerance": 150},
+            *nodes,
+            {"type": "direct", "tag": "direct"},
+        ],
+    }
+    return json.dumps(cfg, ensure_ascii=False, indent=2) + "\n"
 
 
 def build_yaml() -> str:
@@ -261,21 +361,29 @@ def build_front_only() -> str:
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         expected = SUB_PATH_FILE.read_text(encoding="utf-8").strip()
-        if self.path != expected:
+        if self.path == expected:
+            now = time.time()
+            if _cache["yaml"] and now - _cache["at"] < CACHE_TTL:
+                body = _cache["yaml"]
+            else:
+                try:
+                    body = build_yaml()
+                except Exception:
+                    body = _cache["yaml"] or build_front_only()
+                _cache.update(at=now, yaml=body)
+            ctype = "text/yaml; charset=utf-8"
+        elif self.path == expected + "/links":
+            body = build_links()
+            ctype = "text/plain; charset=utf-8"
+        elif self.path == expected + "/sb.json":
+            body = build_sb()
+            ctype = "application/json; charset=utf-8"
+        else:
             self.send_error(404)
             return
-        now = time.time()
-        if _cache["yaml"] and now - _cache["at"] < CACHE_TTL:
-            body = _cache["yaml"]
-        else:
-            try:
-                body = build_yaml()
-            except Exception:
-                body = _cache["yaml"] or build_front_only()
-            _cache.update(at=now, yaml=body)
         data = body.encode("utf-8")
         self.send_response(200)
-        self.send_header("Content-Type", "text/yaml; charset=utf-8")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         # dynamic content: never let a client cache a stale exit list
         self.send_header("Cache-Control", "no-store")

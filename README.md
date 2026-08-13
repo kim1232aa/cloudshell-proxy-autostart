@@ -137,6 +137,26 @@ returns the YAML at the exact secret path and a bare 404 for anything else
 credential, treat it like a password. Token-mode (dashboard) tunnels: configure the
 same path split as two Public Hostname/ingress rules in the dashboard instead.
 
+The same secret path also serves two non-Clash formats:
+
+- `{sub-path}/links` — standard v2ray base64 subscription (one `vless://` per
+  line), for v2rayNG / Shadowrocket / Nekobox and friends
+- `{sub-path}/sb.json` — ready-to-run sing-box **client** config: local socks5
+  on `:1080`, all nodes under a urltest outbound. For devices without Clash
+  (e.g. a VPS) using the official sing-box image:
+
+  ```bash
+  curl -fsSL "https://<host><secret-path>/sb.json" -o sb.json
+  docker run -d --name gcs-socks --restart unless-stopped \
+    -p 127.0.0.1:1080:1080 -v "$PWD/sb.json:/etc/sing-box/config.json:ro" \
+    ghcr.io/sagernet/sing-box:latest run -c /etc/sing-box/config.json
+  # apps then use socks5://127.0.0.1:1080; refresh by re-curl + docker restart
+  ```
+
+  (Plain `socks5://` share links cannot express the ws+tls disguise the tunnel
+  requires, so the socks5 entry is provided client-side by sing-box, not as a
+  share-link protocol.)
+
 ## 3. Watchdog container (self-contained monitor + failover)
 
 ```bash
@@ -223,7 +243,7 @@ probe — and in docker also gcloud itself — via a local proxy, e.g.
 | `.customize_environment` | Cloud Shell | Official boot hook, hands off to `proxy-start.sh` at every boot |
 | `watchdog.sh` | Local / container | Probe, keepalive, quota-aware multi-account failover; cron or `--loop` |
 | `cf-setup.sh` | Local | Create named tunnel + DNS route via local cloudflared login (no dashboard) |
-| `subserver.py` | Cloud Shell | Optional: dynamic Clash subscription at one secret path (front + live residential nodes) |
+| `subserver.py` | Cloud Shell | Optional: dynamic subscription at one secret path — Clash YAML, v2ray base64 links, sing-box client config (front + live residential nodes) |
 | `install-residential.sh` | Cloud Shell | Optional: add the kui residential-exit layer — see [RESIDENTIAL.md](RESIDENTIAL.md) |
 | `supervise.sh` | Cloud Shell | 15 s keep-alive loop for all components (installed by `install-residential.sh`) |
 | `res-domains.txt`, `front-domains.txt` | Cloud Shell | Examples: entry-domain lists for residential / front nodes |
