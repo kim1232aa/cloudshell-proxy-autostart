@@ -243,7 +243,7 @@ def build_yaml() -> str:
     for d in ("gemini.google.com", "generativelanguage.googleapis.com", "bard.google.com", "deepmind.google", "aistudio.google.com"):
         r.append(f"  - DOMAIN-SUFFIX,{d},🔵 Google·Gemini")
     r.append("  - GEOIP,CN,🇨🇳 中国流量,no-resolve")
-    r.append("  - MATCH,🌍 其他流量")
+    r.append("  - MATCH,🌐 其他流量")
 
     return "\n".join(lines + g + r) + "\n"
 
