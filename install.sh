@@ -414,7 +414,7 @@ def build_yaml() -> str:
     front, front_names = front_block()
     domains = res_domains()
 
-    res_names, res_blocks, countries = [], [], {}
+    res_names, res_blocks = [], []
     pure_names = []  # verified residential, PRIMARY domain only (feeds url-test groups)
     try:
         exits = [s for s in kui_exits() if s.get("state") == "ready" and s.get("egress_ip")]
@@ -432,9 +432,8 @@ def build_yaml() -> str:
             name = block.split('"')[1]
             res_names.append(name)
             res_blocks.append(block)
-            if di == 0 and is_resi:  # url-test & country groups: primary-domain residential only
+            if di == 0 and is_resi:  # url-test group: primary-domain residential only
                 pure_names.append(name)
-                countries.setdefault(slot.get("country") or "??", []).append(name)
 
     now = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
     lines = [
@@ -469,8 +468,6 @@ def build_yaml() -> str:
         g.append('  - name: "🏠 住宅自动"\n    type: select\n    proxies:\n      - "🚀 节点选择"')
     for grp in ('🧠 Claude', '🤖 ChatGPT', '🔵 Google·Gemini'):
         g.append(f'  - name: "{grp}"\n    type: select\n    proxies:\n' + lst(["🏠 住宅自动", "🚀 节点选择", "⚡ 自动选择"] + pure_names))
-    for cc, names in sorted(countries.items()):
-        g.append(f'  - name: "🏠 {cc}住宅"\n    type: url-test\n    url: "http://www.gstatic.com/generate_204"\n    interval: 300\n    proxies:\n' + lst(names))
     g.append('  - name: "🌐 其他流量"\n    type: select\n    proxies:\n' + lst(["🚀 节点选择", "⚡ 自动选择", "🏠 住宅自动", "DIRECT"]))
     g.append('  - name: "🇨🇳 中国流量"\n    type: select\n    proxies:\n' + lst(["DIRECT", "🚀 节点选择"]))
 
