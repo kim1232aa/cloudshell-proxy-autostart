@@ -71,17 +71,16 @@ def _active_lines(f: pathlib.Path) -> list[list[str]]:
     return out
 
 
-# Residential entry domains: FIRST entry is the primary (goes into url-test
-# groups), following entries are manual-select fallbacks. One slot = one node
-# per entry, no full slot x domain matrix.
-# Override via res-domains.txt next to this script: one "domain [tag]" per line.
-# Default: the tunnel hostname itself.
+# Residential entry domain: only the FIRST entry of res-domains.txt is used —
+# one slot = one node, no manual-select fallback variants (they doubled the
+# node count). Override via res-domains.txt next to this script:
+# one "domain [tag]" per line. Default: the tunnel hostname itself.
 def res_domains() -> list[tuple[str, str]]:
     f = BASE / "res-domains.txt"
     if f.exists():
         out = [(p[0], p[1] if len(p) > 1 else "") for p in _active_lines(f)]
         if out:
-            return out
+            return out[:1]
     return [(cf_host(), "")]
 
 
@@ -176,7 +175,7 @@ def build_yaml() -> str:
     domains = res_domains()
 
     res_names, res_blocks = [], []
-    pure_names = []  # verified residential, PRIMARY domain only (feeds url-test groups)
+    pure_names = []  # verified residential only (feeds the url-test group)
     try:
         exits = [s for s in kui_exits() if s.get("state") == "ready" and s.get("egress_ip")]
     except Exception:
@@ -188,12 +187,12 @@ def build_yaml() -> str:
             is_resi = slot["check_result"]["residential"].get("egress_type") == "residential"
         except Exception:
             is_resi = False
-        for di, (domain, tag) in enumerate(domains):
+        for domain, tag in domains:  # exactly one entry (see res_domains)
             block = res_node_yaml(slot, domain, tag)
             name = block.split('"')[1]
             res_names.append(name)
             res_blocks.append(block)
-            if di == 0 and is_resi:  # url-test group: primary-domain residential only
+            if is_resi:
                 pure_names.append(name)
 
     now = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
