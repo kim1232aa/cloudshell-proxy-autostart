@@ -185,7 +185,7 @@ cat state/proxy-link.txt             # latest link (changes on quick-tunnel rebu
 docker compose run --rm watchdog --force   # force an immediate failover
 ```
 
-Useful env knobs (compose `.env`): `INTERVAL` (probe seconds, default 180),
+Useful env knobs (compose `.env`): `INTERVAL` (probe seconds, default 600),
 `PROBE_RETRIES` (000-retries before declaring dead, default 4 — 000 is flaky on
 some networks; 502/503/530 are believed immediately), `PROBE_PROXY` (route the
 probe — and in docker also gcloud itself — via a local proxy, e.g.

@@ -10,7 +10,7 @@ services:
     network_mode: host
     environment:
       TUNNEL_HOST: ${TUNNEL_HOST:?create .env with TUNNEL_HOST=gcs.example.com}
-      INTERVAL: ${INTERVAL:-180}
+      INTERVAL: ${INTERVAL:-600}
       PROBE_PROXY: ${PROBE_PROXY:-}
       PROBE_RETRIES: ${PROBE_RETRIES:-4}
       KEEPALIVE: ${KEEPALIVE:-1}

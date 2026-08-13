@@ -18,7 +18,7 @@
 #   TUNNEL_HOST may be given as env instead of the argument.
 #
 # Env knobs (all optional):
-#   INTERVAL=180             seconds between cycles in --loop mode
+#   INTERVAL=600             seconds between cycles in --loop mode
 #   PROBE_PROXY=             e.g. http://172.17.0.1:7890 — route probe via local proxy
 #   KEEPALIVE=1              0 disables the keepalive tickle
 #   KEEPALIVE_INTERVAL=1500  seconds between tickles (must stay < 40 min)

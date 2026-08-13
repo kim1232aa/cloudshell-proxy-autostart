@@ -8,7 +8,7 @@ RUN chmod +x /usr/local/bin/watchdog.sh /usr/local/bin/docker-entrypoint.sh
 ENV CLOUDSDK_CONFIG=/state/gcloud \
     STATE_DIR=/state \
     TUNNEL_HOST= \
-    INTERVAL=180 \
+    INTERVAL=600 \
     PROBE_PROXY= \
     PROBE_RETRIES=4 \
     KEEPALIVE=1 \
