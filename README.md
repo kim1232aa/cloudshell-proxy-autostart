@@ -141,21 +141,25 @@ The same secret path also serves two non-Clash formats:
 
 - `{sub-path}/links` — standard v2ray base64 subscription (one `vless://` per
   line), for v2rayNG / Shadowrocket / Nekobox and friends
-- `{sub-path}/sb.json` — ready-to-run sing-box **client** config: local socks5
-  on `:1080`, all nodes under a urltest outbound. For devices without Clash
-  (e.g. a VPS) using the official sing-box image:
+- `{sub-path}/sb.json` — ready-to-run sing-box **client** config: a mixed
+  socks5+http proxy on `:1080` (auth: user `gcs`, password = the stack UUID),
+  all nodes under a urltest outbound. For devices without Clash — browsers,
+  curl, a VPS — using the official sing-box image:
 
   ```bash
   curl -fsSL "https://<host><secret-path>/sb.json" -o sb.json
   docker run -d --name gcs-socks --restart unless-stopped \
-    -p 127.0.0.1:1080:1080 -v "$PWD/sb.json:/etc/sing-box/config.json:ro" \
+    -p 1080:1080 -v "$PWD/sb.json:/etc/sing-box/config.json:ro" \
     ghcr.io/sagernet/sing-box:latest run -c /etc/sing-box/config.json
-  # apps then use socks5://127.0.0.1:1080; refresh by re-curl + docker restart
+  # apps / browsers then use  http://gcs:<uuid>@<this-host>:1080
+  #                    or  socks5://gcs:<uuid>@<this-host>:1080
+  # refresh nodes by re-curl + docker restart gcs-socks
   ```
 
   (Plain `socks5://` share links cannot express the ws+tls disguise the tunnel
   requires, so the socks5 entry is provided client-side by sing-box, not as a
-  share-link protocol.)
+  share-link protocol. The inbound always requires auth, so binding 0.0.0.0 to
+  serve other devices does not create an open proxy.)
 
 ## 3. Watchdog container (self-contained monitor + failover)
 

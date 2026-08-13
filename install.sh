@@ -468,12 +468,16 @@ def build_links() -> str:
 
 
 def build_sb() -> str:
-    """Ready-to-run sing-box client config: local socks5 :1080, all nodes under
-    a urltest outbound. For devices without Clash (e.g. a VPS):
+    """Ready-to-run sing-box client config: local socks5+http proxy on :1080
+    (auth required — user "gcs", password = the stack UUID), all nodes under
+    a urltest outbound. For devices without Clash (browsers, a VPS, ...):
 
       docker run -d --name gcs-socks --restart unless-stopped \
         -p 127.0.0.1:1080:1080 -v $PWD/sb.json:/etc/sing-box/config.json:ro \
         ghcr.io/sagernet/sing-box:latest run -c /etc/sing-box/config.json
+
+    Bind 0.0.0.0 instead of 127.0.0.1 to share with other devices — the
+    inbound requires auth either way, so it is not an open proxy.
     """
     host, uuid = cf_host(), vless_uuid()
 
@@ -494,8 +498,9 @@ def build_sb() -> str:
     tags = [o["tag"] for o in nodes]
     cfg = {
         "log": {"level": "warn", "timestamp": True},
-        "inbounds": [{"type": "socks", "tag": "socks-in",
-                      "listen": "0.0.0.0", "listen_port": 1080}],
+        "inbounds": [{"type": "mixed", "tag": "socks-in",
+                      "listen": "0.0.0.0", "listen_port": 1080,
+                      "users": [{"username": "gcs", "password": uuid}]}],
         "outbounds": [
             {"type": "selector", "tag": "proxy",
              "outbounds": ["auto"] + tags, "default": "auto"},
