@@ -40,7 +40,7 @@ for a in "$@"; do
 done
 [ -z "$TUNNEL_HOST" ] && { echo "usage: watchdog.sh <tunnel-hostname> [--loop|--force]" >&2; exit 64; }
 
-INTERVAL="${INTERVAL:-180}"
+INTERVAL="${INTERVAL:-600}"
 PROBE_PROXY="${PROBE_PROXY:-}"
 KEEPALIVE="${KEEPALIVE:-1}"
 KEEPALIVE_INTERVAL="${KEEPALIVE_INTERVAL:-1500}"
